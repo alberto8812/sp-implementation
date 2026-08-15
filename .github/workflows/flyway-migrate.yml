@@ -1,0 +1,54 @@
+name: Flyway Migrate
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "sql/**"
+      - "flyway.conf.example"
+      - ".github/workflows/flyway-migrate.yml"
+  workflow_dispatch: {}
+
+concurrency:
+  group: flyway-migrate
+  cancel-in-progress: false
+
+env:
+  # Pinned Flyway CLI version. Bump deliberately — see README "Flyway version"
+  # section for how/when to update.
+  FLYWAY_VERSION: "10.20.1"
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Flyway CLI (pinned)
+        run: |
+          curl -sSL -o "$RUNNER_TEMP/flyway.tar.gz" \
+            "https://repo1.maven.org/maven2/org/flywaydb/flyway-commandline/${FLYWAY_VERSION}/flyway-commandline-${FLYWAY_VERSION}-linux-x64.tar.gz"
+          tar -xzf "$RUNNER_TEMP/flyway.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/flyway-${FLYWAY_VERSION}" >> "$GITHUB_PATH"
+
+      - name: Flyway info (before)
+        env:
+          FLYWAY_URL: "jdbc:mysql://${{ secrets.RDS_HOST }}:${{ secrets.RDS_PORT }}/${{ secrets.RDS_DB }}"
+          FLYWAY_USER: ${{ secrets.RDS_USER }}
+          FLYWAY_PASSWORD: ${{ secrets.RDS_PASSWORD }}
+        run: flyway -locations=filesystem:sql info
+
+      - name: Flyway migrate
+        env:
+          FLYWAY_URL: "jdbc:mysql://${{ secrets.RDS_HOST }}:${{ secrets.RDS_PORT }}/${{ secrets.RDS_DB }}"
+          FLYWAY_USER: ${{ secrets.RDS_USER }}
+          FLYWAY_PASSWORD: ${{ secrets.RDS_PASSWORD }}
+        run: flyway -locations=filesystem:sql migrate
+
+      - name: Flyway info (after)
+        env:
+          FLYWAY_URL: "jdbc:mysql://${{ secrets.RDS_HOST }}:${{ secrets.RDS_PORT }}/${{ secrets.RDS_DB }}"
+          FLYWAY_USER: ${{ secrets.RDS_USER }}
+          FLYWAY_PASSWORD: ${{ secrets.RDS_PASSWORD }}
+        run: flyway -locations=filesystem:sql info

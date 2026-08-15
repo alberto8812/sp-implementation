@@ -1,0 +1,17 @@
+# Flyway local credentials — never commit real connection secrets
+flyway.conf
+
+# Environment / secret files
+.env
+.env.*
+*.pem
+
+# Flyway CLI download/extraction artifacts (local install convenience)
+flyway-*/
+
+# macOS
+.DS_Store
+
+# Local AI tooling state (not part of the project)
+.atl/
+.engram/

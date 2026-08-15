@@ -1,0 +1,17 @@
+# Flyway local configuration TEMPLATE.
+#
+# Copy this file to `flyway.conf` (already gitignored) and fill in real
+# connection details for your dedicated non-production/test Aurora MySQL
+# (RDS) instance. Never commit `flyway.conf` with real credentials.
+#
+#   cp flyway.conf.example flyway.conf
+#
+# `flyway.conf` is used for LOCAL validation only. CI (GitHub Actions) never
+# reads this file — it authenticates entirely via FLYWAY_URL / FLYWAY_USER /
+# FLYWAY_PASSWORD environment variables sourced from GitHub Secrets.
+
+flyway.url=jdbc:mysql://<your-test-rds-endpoint>:3306/<your_test_schema>
+flyway.user=<placeholder-user>
+flyway.password=<placeholder-password>
+
+flyway.locations=filesystem:sql
