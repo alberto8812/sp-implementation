@@ -16,6 +16,11 @@ BEGIN
             SET MESSAGE_TEXT = 'Estado inválido para pedido';
     END IF;
 
+    IF (SELECT estado FROM pedidos WHERE id = p_pedido_id) = 'entregado' AND p_estado = 'cancelado' THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'No se puede cancelar un pedido ya entregado';
+    END IF;
+
     UPDATE pedidos
     SET estado = p_estado
     WHERE id = p_pedido_id;
