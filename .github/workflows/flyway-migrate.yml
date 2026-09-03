@@ -20,7 +20,9 @@ env:
 
 jobs:
   migrate:
-    runs-on: ubuntu-latest
+    # Self-hosted runner inside the lab VPC. GitHub-hosted runners have no route
+    # to the private databases; the runner reaches them from inside the network.
+    runs-on: [self-hosted, linux, vpc-interna]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
