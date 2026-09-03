@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+#
+# Bootstrap for a dev or test MySQL host.
+#
+# Produces a MySQL 8.0 server listening on the private interface, with the
+# Flyway schema and a least-privilege Flyway user. The password is read from
+# Parameter Store at boot and never appears in this log, in the process list, or
+# in the Terraform plan output.
+set -euo pipefail
+
+LOG_FILE="/var/log/flyway-mysql-bootstrap.log"
+exec >>"$${LOG_FILE}" 2>&1
+
+log() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
+
+ENVIRONMENT="${environment}"
+SCHEMA="${db_schema_name}"
+DB_USER="${flyway_db_user}"
+PARAM_NAME="${password_parameter}"
+REGION="${aws_region}"
+
+log "=== Flyway MySQL bootstrap starting for environment $${ENVIRONMENT} ==="
+
+export DEBIAN_FRONTEND=noninteractive
+
+log "Installing packages"
+apt-get update -y
+apt-get install -y mysql-server awscli
+
+# Canonical's AMI ships the SSM agent as a snap, but it is not guaranteed to be
+# present or started. Without it the instance never registers and there is no
+# way in, because this module creates no key pair.
+log "Ensuring the SSM agent is running"
+snap install amazon-ssm-agent --classic || true
+snap start amazon-ssm-agent || true
+
+# MySQL listens on loopback only by default, which produces a
+# "Communications link failure" from the runner rather than a clear refusal.
+# The host is reachable only from the runner Security Group, so binding to all
+# interfaces exposes nothing further.
+log "Binding MySQL to all interfaces"
+CONF="/etc/mysql/mysql.conf.d/mysqld.cnf"
+if grep -qE '^[[:space:]]*bind-address' "$${CONF}"; then
+  sed -i 's/^[[:space:]]*bind-address.*/bind-address = 0.0.0.0/' "$${CONF}"
+else
+  printf '\nbind-address = 0.0.0.0\n' >> "$${CONF}"
+fi
+# mysqlx binds separately and is not used here; leaving it on loopback keeps one
+# fewer listener on the private interface.
+systemctl enable mysql
+systemctl restart mysql
+
+log "Reading the Flyway password from Parameter Store"
+FLYWAY_PASSWORD="$(aws ssm get-parameter \
+  --name "$${PARAM_NAME}" \
+  --with-decryption \
+  --region "$${REGION}" \
+  --query 'Parameter.Value' \
+  --output text)"
+
+if [ -z "$${FLYWAY_PASSWORD}" ] || [ "$${FLYWAY_PASSWORD}" = "None" ]; then
+  log "ERROR: could not read $${PARAM_NAME}. Check the instance role and the parameter path."
+  exit 1
+fi
+
+# The statements go through a mode-600 file rather than `mysql -e`, so the
+# password never appears in the process list where any local user could read it
+# with ps. Local root authenticates over the unix socket, so no credentials are
+# needed to run it.
+SQL_FILE="$(mktemp /root/flyway-bootstrap.XXXXXX.sql)"
+chmod 600 "$${SQL_FILE}"
+
+cat > "$${SQL_FILE}" <<SQL
+CREATE DATABASE IF NOT EXISTS \`$${SCHEMA}\`
+  CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE USER IF NOT EXISTS '$${DB_USER}'@'%' IDENTIFIED BY '$${FLYWAY_PASSWORD}';
+ALTER USER '$${DB_USER}'@'%' IDENTIFIED BY '$${FLYWAY_PASSWORD}';
+
+-- Exactly the grant set from Phase 3 of docs/aws-multi-environment-setup.md,
+-- scoped to one schema. No GRANT ALL, no *.*, no SUPER, no FILE.
+GRANT SELECT, INSERT, UPDATE, DELETE,
+      CREATE, ALTER, DROP, INDEX, REFERENCES,
+      CREATE ROUTINE, ALTER ROUTINE, EXECUTE,
+      CREATE VIEW, SHOW VIEW, TRIGGER
+  ON \`$${SCHEMA}\`.* TO '$${DB_USER}'@'%';
+
+FLUSH PRIVILEGES;
+SQL
+
+unset FLYWAY_PASSWORD
+
+log "Creating schema $${SCHEMA} and user $${DB_USER}"
+mysql --defaults-extra-file=/etc/mysql/debian.cnf < "$${SQL_FILE}"
+
+shred -u "$${SQL_FILE}" 2>/dev/null || rm -f "$${SQL_FILE}"
+
+log "=== Flyway MySQL bootstrap finished for environment $${ENVIRONMENT} ==="

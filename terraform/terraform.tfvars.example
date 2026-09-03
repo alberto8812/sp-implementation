@@ -1,0 +1,45 @@
+# Copy to terraform.tfvars and fill in the three required values.
+# terraform.tfvars is gitignored; this example file is not.
+
+# Region for the whole lab. Everything is regional.
+aws_region = "us-east-1"
+
+# Prefix for every resource name, tag and SSM parameter path.
+project_name = "flyway-demo"
+
+# CIDR for the lab VPC. Only needs to avoid colliding with a VPC you intend to peer.
+vpc_cidr = "10.42.0.0/16"
+
+# false: workloads in public subnets with zero-ingress Security Groups (free).
+# true:  workloads in private subnets behind a NAT Gateway (~32 USD/month).
+use_nat_gateway = false
+
+# REQUIRED. GitHub organization or user that owns the repository.
+github_owner = "your-github-org"
+
+# REQUIRED. Repository name, without the owner.
+github_repo = "flyway-demo"
+
+# REQUIRED. Classic PAT with the 'repo' scope. Used once at boot to obtain a
+# short-lived runner registration token. Revoke it after the runner shows Idle.
+github_pat = "ghp_replace_me"
+
+# Labels the workflows target. Changing 'vpc-interna' makes jobs queue forever.
+runner_labels = "self-hosted,linux,vpc-interna"
+
+# Pinned GitHub Actions runner release.
+runner_version = "2.321.0"
+
+# Schema Flyway owns, identical in all three environments.
+db_schema_name = "flyway_demo"
+
+# RDS master user. Not the Flyway user; used once to create it.
+db_master_username = "flyway_admin"
+
+# Least-privilege user the pipeline authenticates as.
+flyway_db_user = "flyway_app"
+
+# Instance sizes. Migrations are I/O bound, so the smallest types are enough.
+mysql_ec2_instance_type = "t3.micro"
+runner_instance_type    = "t3.micro"
+rds_instance_class      = "db.t4g.micro"
