@@ -15,3 +15,22 @@ flyway-*/
 # Local AI tooling state (not part of the project)
 .atl/
 .engram/
+
+# Terraform (terraform/ lab)
+terraform/.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Variable files hold the GitHub PAT. The example file is committed on purpose.
+*.tfvars
+*.tfvars.json
+!terraform.tfvars.example
+
+# .terraform.lock.hcl is deliberately NOT ignored: it pins provider versions and
+# their checksums, so it must be committed for applies to be reproducible.
