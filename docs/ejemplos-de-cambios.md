@@ -225,15 +225,33 @@ caracteres en vez de 20. Abre `V3__add_telefono_clientes.sql`, cambia el `20`
 por `30`, y pushea. Es el reflejo natural de quien viene de editar archivos
 sueltos.
 
-**Qué hace el pipeline.**
+**Qué pasa.** Ni siquiera llega a `main`. El check
+`Applied migrations are not edited` marca el Pull Request en rojo:
+
+```
+A versioned migration was modified, renamed or deleted:
+sql/V3__add_telefono_clientes.sql
+
+Add a new migration instead, for example:
+  sql/V20260904_1328__describe_the_change.sql
+```
+
+Y como el ruleset de `main` exige que ese check pase, **el botón de Merge queda
+deshabilitado**.
+
+Lo revelador es el otro check: `Migrations run from an empty schema` sale
+**verde**. El SQL editado es perfectamente válido y corre sin problemas desde
+una base vacía. El problema no es el SQL.
+
+Si de todos modos el cambio llegara a `main` —por ejemplo si alguien mergea con
+el gate desactivado— el pipeline lo frena en dev:
 
 ```
 ERROR: Validate failed: Migrations have failed validation
 Migration checksum mismatch for migration version 3
 ```
 
-El job de **dev falla**. `test` y `production` quedan en `skipped`. Ninguna base
-se tocó.
+`test` y `production` quedan en `skipped`. Ninguna base se tocó.
 
 **Por qué.** `V3__` ya se ejecutó en los tres ambientes. Editarlo no reaplica
 nada — el `ALTER TABLE` original ya corrió. Lo único que cambia es el archivo,
@@ -270,7 +288,11 @@ tocar la primera base.
 ### El ciclo, en cualquiera de los casos
 
 ```
-editar el archivo  →  commit  →  push
+rama corta desde main  →  editar el archivo  →  commit  →  Pull Request
+        ↓
+   dos checks automáticos + review humano
+        ↓
+      merge a main
         ↓
       dev aplica
         ↓
@@ -280,6 +302,9 @@ editar el archivo  →  commit  →  push
         ↓
       aplica, y queda registrado quién aprobó y cuándo
 ```
+
+El detalle de las ramas, los checks y las reglas de GitHub está en
+[`flujo-de-trabajo.md`](flujo-de-trabajo.md).
 
 ### Lo que queda registrado
 

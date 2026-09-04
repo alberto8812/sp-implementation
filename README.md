@@ -13,6 +13,8 @@ the mechanism. They are not real production procedures.
 
 | You want to | Read |
 |-------------|------|
+| Know how the team works day to day — branches, PRs, checks | [`docs/flujo-de-trabajo.md`](docs/flujo-de-trabajo.md) |
+| See worked examples of the seven common kinds of change | [`docs/ejemplos-de-cambios.md`](docs/ejemplos-de-cambios.md) |
 | Build a disposable AWS lab and practise the whole cycle | [`terraform/README.md`](terraform/README.md) |
 | Repeat the exact run that was verified, including its corrections | [`docs/lab-walkthrough.md`](docs/lab-walkthrough.md) |
 | Adopt this on infrastructure that already exists | [`docs/aws-multi-environment-setup.md`](docs/aws-multi-environment-setup.md) |
@@ -26,6 +28,7 @@ sql/                                  Flyway migrations
   V3__add_telefono_clientes.sql       Versioned: adds clientes.telefono
   R__sp_actualizar_pedido.sql         Repeatable: example SP, edited in place
 .github/workflows/
+  pr-check.yml                        On every PR: immutability + migrate from empty
   flyway-migrate.yml                  Orchestrator: dev -> test -> production
   flyway-run.yml                      Reusable: one environment per call
 terraform/                            Disposable AWS lab (VPC, 2x EC2, RDS, runner)
@@ -53,6 +56,21 @@ a new file. The pipeline's `validate` step enforces this: edit an applied `V__`
 and the run stops at dev, leaving test and production untouched.
 
 ## The pipeline
+
+Nothing reaches `main` unchecked. Every pull request that touches `sql/` runs
+two jobs on GitHub-hosted runners — no real database is involved, so PRs
+validate in parallel:
+
+| Check | What it catches |
+|-------|-----------------|
+| `Applied migrations are not edited` | A `V__` that was modified, renamed or deleted. Its checksum is already recorded in every environment that applied it, so editing one makes the file disagree with the database |
+| `Migrations run from an empty schema` | Syntax errors, broken ordering, and migrations that are not idempotent — verified against a throwaway MySQL, then re-run to prove the second pass applies nothing |
+
+A ruleset on `main` requires both to pass, so a broken migration cannot be
+merged. See [`docs/flujo-de-trabajo.md`](docs/flujo-de-trabajo.md) for the full
+branching model and the ruleset settings.
+
+Once merged:
 
 ```
 push to main (paths: sql/**)
