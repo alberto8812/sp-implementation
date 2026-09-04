@@ -30,6 +30,7 @@ BEGIN
             SET MESSAGE_TEXT = 'Solo se puede devolver un pedido entregado';
     END IF;
 
+
     UPDATE pedidos
     SET estado = p_estado
     WHERE id = p_pedido_id;
