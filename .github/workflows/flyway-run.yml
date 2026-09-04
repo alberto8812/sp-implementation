@@ -1,0 +1,57 @@
+name: Flyway Run
+
+# Reusable workflow. One environment per call, so the caller decides the
+# promotion order and GitHub enforces each environment's protection rules.
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: Target GitHub Environment (dev, test or production)
+        required: true
+        type: string
+
+env:
+  # Pinned Flyway CLI version. Bump deliberately — see README "Flyway version"
+  # section for how/when to update.
+  FLYWAY_VERSION: "10.20.1"
+
+jobs:
+  migrate:
+    name: ${{ inputs.environment }}
+    # Self-hosted runner inside the VPC. GitHub-hosted runners have no network
+    # route to the private databases.
+    runs-on: [self-hosted, linux, vpc-interna]
+    # Scopes the secrets below to this environment and applies its protection
+    # rules. A production run pauses here until a required reviewer approves.
+    environment: ${{ inputs.environment }}
+    env:
+      FLYWAY_URL: "jdbc:mysql://${{ secrets.DB_HOST }}:${{ secrets.DB_PORT }}/${{ secrets.DB_NAME }}"
+      FLYWAY_USER: ${{ secrets.DB_USER }}
+      FLYWAY_PASSWORD: ${{ secrets.DB_PASSWORD }}
+      # `clean` drops every object in the schema. Nothing in this pipeline needs
+      # it, so it stays disabled at every layer that can disable it.
+      FLYWAY_CLEAN_DISABLED: "true"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Flyway CLI (pinned)
+        run: |
+          curl -sSL -o "$RUNNER_TEMP/flyway.tar.gz" \
+            "https://repo1.maven.org/maven2/org/flywaydb/flyway-commandline/${FLYWAY_VERSION}/flyway-commandline-${FLYWAY_VERSION}-linux-x64.tar.gz"
+          tar -xzf "$RUNNER_TEMP/flyway.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/flyway-${FLYWAY_VERSION}" >> "$GITHUB_PATH"
+
+      - name: Flyway info (before)
+        run: flyway -locations=filesystem:sql info
+
+      - name: Flyway validate
+        # Fails when a versioned migration that is already applied has been
+        # edited. This is the guard the pipeline exists for.
+        run: flyway -locations=filesystem:sql validate
+
+      - name: Flyway migrate
+        run: flyway -locations=filesystem:sql migrate
+
+      - name: Flyway info (after)
+        run: flyway -locations=filesystem:sql info

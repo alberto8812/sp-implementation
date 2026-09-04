@@ -5,52 +5,34 @@ on:
     branches: [main]
     paths:
       - "sql/**"
-      - "flyway.conf.example"
       - ".github/workflows/flyway-migrate.yml"
+      - ".github/workflows/flyway-run.yml"
   workflow_dispatch: {}
 
+# One migration run at a time, and never cancel one in flight: a cancelled
+# migration leaves the schema history in a state a human has to resolve.
 concurrency:
   group: flyway-migrate
   cancel-in-progress: false
 
-env:
-  # Pinned Flyway CLI version. Bump deliberately — see README "Flyway version"
-  # section for how/when to update.
-  FLYWAY_VERSION: "10.20.1"
-
 jobs:
-  migrate:
-    # Self-hosted runner inside the lab VPC. GitHub-hosted runners have no route
-    # to the private databases; the runner reaches them from inside the network.
-    runs-on: [self-hosted, linux, vpc-interna]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+  dev:
+    uses: ./.github/workflows/flyway-run.yml
+    with:
+      environment: dev
+    secrets: inherit
 
-      - name: Install Flyway CLI (pinned)
-        run: |
-          curl -sSL -o "$RUNNER_TEMP/flyway.tar.gz" \
-            "https://repo1.maven.org/maven2/org/flywaydb/flyway-commandline/${FLYWAY_VERSION}/flyway-commandline-${FLYWAY_VERSION}-linux-x64.tar.gz"
-          tar -xzf "$RUNNER_TEMP/flyway.tar.gz" -C "$RUNNER_TEMP"
-          echo "$RUNNER_TEMP/flyway-${FLYWAY_VERSION}" >> "$GITHUB_PATH"
+  test:
+    # test only runs if dev succeeded. The promotion order is the contract.
+    needs: dev
+    uses: ./.github/workflows/flyway-run.yml
+    with:
+      environment: test
+    secrets: inherit
 
-      - name: Flyway info (before)
-        env:
-          FLYWAY_URL: "jdbc:mysql://${{ secrets.RDS_HOST }}:${{ secrets.RDS_PORT }}/${{ secrets.RDS_DB }}"
-          FLYWAY_USER: ${{ secrets.RDS_USER }}
-          FLYWAY_PASSWORD: ${{ secrets.RDS_PASSWORD }}
-        run: flyway -locations=filesystem:sql info
-
-      - name: Flyway migrate
-        env:
-          FLYWAY_URL: "jdbc:mysql://${{ secrets.RDS_HOST }}:${{ secrets.RDS_PORT }}/${{ secrets.RDS_DB }}"
-          FLYWAY_USER: ${{ secrets.RDS_USER }}
-          FLYWAY_PASSWORD: ${{ secrets.RDS_PASSWORD }}
-        run: flyway -locations=filesystem:sql migrate
-
-      - name: Flyway info (after)
-        env:
-          FLYWAY_URL: "jdbc:mysql://${{ secrets.RDS_HOST }}:${{ secrets.RDS_PORT }}/${{ secrets.RDS_DB }}"
-          FLYWAY_USER: ${{ secrets.RDS_USER }}
-          FLYWAY_PASSWORD: ${{ secrets.RDS_PASSWORD }}
-        run: flyway -locations=filesystem:sql info
+  production:
+    needs: test
+    uses: ./.github/workflows/flyway-run.yml
+    with:
+      environment: production
+    secrets: inherit
