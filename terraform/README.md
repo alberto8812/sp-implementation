@@ -343,31 +343,45 @@ own, so strictly speaking `migrate` would work without a baseline. Baseline them
 anyway: it is the step the runbook exists to teach, and it makes the lab behave
 like the real adoption.
 
+**Baseline at version 0, not 1.** `sql/V1__baseline_schema.sql` creates the
+`clientes` and `pedidos` tables. Baselining at 1 marks that migration as already
+applied, so `migrate` skips it, the tables are never created, and
+`V3__add_telefono_clientes.sql` fails with `Table 'clientes' doesn't exist`.
+Version 1 is the right baseline only for a database whose objects already exist
+— which is the real adoption case this lab imitates, but not the lab itself.
+
+**Extract Flyway under `$HOME`, not `/tmp`.** On Amazon Linux 2023 `/tmp` is a
+tmpfs sized from RAM — about 457 MB on a `t3.micro`. The command-line tarball
+bundles a full JRE, does not fit, and leaves truncated jars behind with only a
+`No space left on device` line buried in the tar output.
+
 From the runner:
 
 ```bash
 FLYWAY_VERSION=10.20.1
-curl -sSL -o /tmp/flyway.tar.gz \
+mkdir -p "$HOME/flyway" "$HOME/nosql"
+curl -sSL -o "$HOME/flyway.tar.gz" \
   "https://repo1.maven.org/maven2/org/flywaydb/flyway-commandline/${FLYWAY_VERSION}/flyway-commandline-${FLYWAY_VERSION}-linux-x64.tar.gz"
-tar -xzf /tmp/flyway.tar.gz -C /tmp
-export PATH="/tmp/flyway-${FLYWAY_VERSION}:$PATH"
+tar -xzf "$HOME/flyway.tar.gz" -C "$HOME/flyway"
+export PATH="$HOME/flyway/flyway-${FLYWAY_VERSION}:$PATH"
 
-git clone https://github.com/<owner>/<repo>.git ~/flyway-demo
-cd ~/flyway-demo
-
+# baseline writes one history row and reads no migrations, so it needs a
+# locations directory but not the repository.
 for ENV in dev test production; do
   HOST="$(aws ssm get-parameter --region "$REGION" --name "/$PROJECT/$ENV/db_host" --query Parameter.Value --output text)"
   PW="$(aws ssm get-parameter --region "$REGION" --name "/$PROJECT/$ENV/db_password" --with-decryption --query Parameter.Value --output text)"
 
   flyway -url="jdbc:mysql://$HOST:3306/$SCHEMA" \
          -user="$FLYWAY_USER" -password="$PW" \
-         -locations=filesystem:sql \
+         -locations=filesystem:"$HOME/nosql" \
          -cleanDisabled=true \
-         -baselineVersion=1 \
-         -baselineDescription="Existing schema before Flyway adoption" \
+         -baselineVersion=0 \
+         -baselineDescription="Before Flyway adoption" \
          baseline
 done
 ```
+
+Expect `Successfully baselined schema with version: 0` three times.
 
 ---
 
@@ -475,6 +489,10 @@ Work through this list every time, in order:
 | `Access denied for user` | Network is fine, credentials are not | Re-read the password from Parameter Store. If a GitHub secret was set from a stale value, set it again |
 | Connection times out, no error | Security Group | The database group must allow 3306 from the **runner Security Group ID**, not from a CIDR |
 | `Table 'x' already exists` on first migrate | Baseline was skipped | Run `flyway baseline` (section 5.5) |
+| `Table 'clientes' doesn't exist` on V3 | Baselined at version 1, so `V1` — which creates the tables — was skipped | Baseline at version 0 (section 5.5). On an already-baselined empty schema, `flyway repair` then a fresh baseline |
+| `No space left on device` while extracting Flyway | `/tmp` is a ~457 MB tmpfs on `t3.micro` | Extract under `$HOME`; the root volume has ~17 GB free |
+| `Validate failed: Detected resolved migration not applied` | `validate` counts pending migrations as failures | Pass `-ignoreMigrationPatterns='*:pending'`, which keeps the checksum check |
+| Runner Idle but jobs still run in GitHub's cloud | The workflow says `runs-on: ubuntu-latest` | Use `runs-on: [self-hosted, linux, vpc-interna]` |
 | `Error: creating IAM Role: EntityAlreadyExists` | A previous destroy failed partway | Delete the leftover role or change `project_name` |
 
 ---

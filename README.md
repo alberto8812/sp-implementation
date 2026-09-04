@@ -1,158 +1,156 @@
-# Flyway + GitHub Actions + Aurora MySQL (RDS) — Demo
+# Flyway + GitHub Actions + MySQL — stored procedures under version control
 
-This repository demonstrates a Flyway-based SQL migration pipeline running
-against a dedicated **non-production/test** Aurora MySQL (RDS) instance,
-triggered by GitHub Actions. Stored procedures (`sp_get_cliente`,
-`sp_actualizar_pedido`) are example/stand-in objects used only to show the
-versioned-vs-repeatable migration mechanism — they are not real production
-SPs.
+Stored procedures are edited by hand and archived as loose copies in
+SharePoint. There is no history, no author or date trail, and a real risk of
+applying the wrong copy. This repository is the working answer: migrations live
+in git, a pipeline applies them in a fixed order across three environments, and
+production waits for a named human to approve.
+
+`sp_get_cliente` and `sp_actualizar_pedido` are stand-ins used to demonstrate
+the mechanism. They are not real production procedures.
+
+## Where to start
+
+| You want to | Read |
+|-------------|------|
+| Build a disposable AWS lab and practise the whole cycle | [`terraform/README.md`](terraform/README.md) |
+| Repeat the exact run that was verified, including its corrections | [`docs/lab-walkthrough.md`](docs/lab-walkthrough.md) |
+| Adopt this on infrastructure that already exists | [`docs/aws-multi-environment-setup.md`](docs/aws-multi-environment-setup.md) |
 
 ## Repository layout
 
 ```
 sql/                                  Flyway migrations
   V1__baseline_schema.sql             Versioned: clientes/pedidos tables
-  V2__create_sp_get_cliente.sql       Versioned: example SP (never edit after apply)
-  R__sp_actualizar_pedido.sql         Repeatable: example SP (live-demo edit target)
+  V2__create_sp_get_cliente.sql       Versioned: example SP
+  V3__add_telefono_clientes.sql       Versioned: adds clientes.telefono
+  R__sp_actualizar_pedido.sql         Repeatable: example SP, edited in place
+.github/workflows/
+  flyway-migrate.yml                  Orchestrator: dev -> test -> production
+  flyway-run.yml                      Reusable: one environment per call
+terraform/                            Disposable AWS lab (VPC, 2x EC2, RDS, runner)
+docs/                                 Adoption runbook and lab walkthrough
 flyway.conf.example                   Committed template (placeholder values)
-flyway.conf                           Local only, gitignored — fill in real test-RDS values
-.github/workflows/flyway-migrate.yml  CI: info -> migrate -> info
-scripts/sg-allow-actions.sh           Operator script: open RDS SG to GitHub Actions IPs
-scripts/sg-revoke-actions.sh          Operator script: close-out counterpart
+flyway.conf                           Local only, gitignored
+scripts/                              Obsolete — see "Retired" below
 ```
 
-## 1. Local setup
+## Versioned vs repeatable
 
-1. Copy the template and fill in real values for your dedicated test RDS instance:
-   ```
-   cp flyway.conf.example flyway.conf
-   ```
-   Edit `flyway.conf` — `flyway.url`, `flyway.user`, `flyway.password`.
-   `flyway.conf` is gitignored; never commit it with real credentials.
+This is the distinction everything else rests on.
 
-2. Install the Flyway CLI locally (same version pinned in CI — see below).
+**`R__` — repeatable. Stored procedures go here.** One file per procedure,
+edited in place as often as needed. Flyway notices the checksum changed and
+re-applies it. The prefix is on the *file name*; the procedure keeps its own
+name, and callers keep using `CALL sp_actualizar_pedido(...)` unchanged.
 
-3. Validate and inspect before touching CI:
-   ```
-   flyway -configFiles=flyway.conf validate
-   flyway -configFiles=flyway.conf info
-   ```
+MySQL 8 has no `CREATE OR REPLACE PROCEDURE`, so a repeatable migration opens
+with `DROP PROCEDURE IF EXISTS`. That is what makes re-running it safe.
 
-4. Run the migration against the test RDS instance:
-   ```
-   flyway -configFiles=flyway.conf migrate
-   ```
-   Confirm `flyway_schema_history` shows `V1`, `V2`, and `R__...` each applied
-   once.
+**`V__` — versioned. Structural change goes here.** Never edited after they are
+applied — an `ALTER TABLE` that already ran cannot run again. The next change is
+a new file. The pipeline's `validate` step enforces this: edit an applied `V__`
+and the run stops at dev, leaving test and production untouched.
 
-5. Idempotence check — re-run unchanged:
-   ```
-   flyway -configFiles=flyway.conf migrate
-   ```
-   Expect "no migrations to apply", no new history rows.
+## The pipeline
 
-6. Live-edit rehearsal — append `, actualizado_en = NOW()` to the `UPDATE`
-   statement in `sql/R__sp_actualizar_pedido.sql`, then re-run `migrate`.
-   Confirm the repeatable SP re-applies and a new `R__` row with a different
-   checksum appears in `flyway_schema_history`. Revert the edit (or commit it
-   deliberately) before proceeding.
+```
+push to main (paths: sql/**)
+        ↓
+      dev        info → validate → migrate → info
+        ↓        needs: dev
+      test       info → validate → migrate → info
+        ↓        needs: test
+   production    waits for a required reviewer
+        ↓
+              approved → applies
+```
 
-## 2. Flyway CLI version
+Four lines carry the design:
 
-Pinned version: **10.20.1** (Flyway 10.x stable line), referenced both in
-`.github/workflows/flyway-migrate.yml` (`FLYWAY_VERSION` env var) and as the
-version you should install locally for parity.
+| Line | What it buys |
+|------|--------------|
+| `runs-on: [self-hosted, linux, vpc-interna]` | GitHub-hosted runners have no route to private databases |
+| `environment: ${{ inputs.environment }}` | Scopes the secrets *and* applies the environment's protection rules |
+| `needs: test` | Production is unreachable if test failed — the job never starts |
+| `FLYWAY_CLEAN_DISABLED: "true"` | `flyway clean` drops every object in the schema. Nothing here needs it |
 
-To bump it later: update `FLYWAY_VERSION` in the workflow file to a newer
-released Flyway 10.x/11.x version, re-validate locally against the test RDS
-instance first, then update this section.
+## Secrets
 
-## 3. GitHub repository secrets (manual, one-time)
-
-In the GitHub repo: **Settings → Secrets and variables → Actions → New
-repository secret**. Add all five:
+Five per environment, scoped to `dev`, `test` and `production`. Not repository
+secrets — a job declaring `environment: dev` cannot read a secret stored in
+`production`, and that is enforced, not encouraged.
 
 | Secret | Value |
-|---|---|
-| `RDS_HOST` | Test Aurora MySQL (RDS) endpoint hostname |
-| `RDS_PORT` | Usually `3306` |
-| `RDS_DB` | Target schema/database name |
-| `RDS_USER` | DB user with migration privileges on the test schema |
-| `RDS_PASSWORD` | DB user password |
+|--------|-------|
+| `DB_HOST` | Host or RDS endpoint for that environment |
+| `DB_PORT` | `3306` |
+| `DB_NAME` | Schema Flyway owns |
+| `DB_USER` | Least-privilege migration user |
+| `DB_PASSWORD` | Its password |
 
-These are consumed by `.github/workflows/flyway-migrate.yml` as
-`FLYWAY_URL` / `FLYWAY_USER` / `FLYWAY_PASSWORD` environment variables —
-never as CLI flags, never printed in logs.
+They are consumed as `FLYWAY_URL` / `FLYWAY_USER` / `FLYWAY_PASSWORD`
+environment variables — never as CLI flags, never printed.
 
-**Verify**: once all five secrets are set, trigger the workflow manually via
-**Actions → Flyway Migrate → Run workflow** (`workflow_dispatch`) and confirm
-a green run before relying on push-triggered runs.
+`terraform output -raw github_secret_commands` prints the exact `gh secret set`
+commands, with each password piped straight from Parameter Store so it never
+becomes a literal in the shell history.
 
-## 4. Security Group IP-range restriction (demo-window only)
+## Flyway CLI version
 
-The RDS Security Group's inbound rule on port 3306 must be scoped to GitHub
-Actions' published IP ranges — never `0.0.0.0/0`. This is handled by two
-operator-run scripts (not invoked by CI, so AWS credentials never touch
-GitHub):
+Pinned to **10.20.1**, in `.github/workflows/flyway-run.yml` (`FLYWAY_VERSION`).
+Install the same version locally for parity.
 
-```
-export SG_ID=sg-xxxxxxxxxxxxxxxxx
-export PREFIX_LIST_NAME=github-actions-demo
+To bump it: change `FLYWAY_VERSION`, verify against a non-production database
+first, then update this section.
 
-# Right before the live demo push:
-./scripts/sg-allow-actions.sh
+## Local setup
 
-# ... run the demo ...
-
-# Immediately after:
-./scripts/sg-revoke-actions.sh
+```bash
+cp flyway.conf.example flyway.conf     # gitignored; fill in real values
+flyway -configFiles=flyway.conf info
+flyway -configFiles=flyway.conf migrate
 ```
 
-`sg-allow-actions.sh` fetches `https://api.github.com/meta`, filters to
-IPv4 entries, validates each against a strict CIDR regex, loads them into an
-AWS managed prefix list, and adds one ingress rule referencing that prefix
-list. It prints the validated entry count and **aborts non-zero, applying
-nothing**, if any entry is malformed or if the count would exceed a safe
-threshold (default 55, under AWS's default 60-rule-per-Security-Group
-quota — override with `MAX_SG_RULE_ENTRIES` only after you've deliberately
-resolved the quota, e.g. via an AWS increase or a curated subset).
+Re-run `migrate` unchanged to confirm idempotence: nothing to apply, no new
+history rows.
 
-`sg-revoke-actions.sh` removes the ingress rule and deletes the prefix list.
+## Pre-push secret scan
 
-Requires the `aws` CLI configured with credentials/region, plus `curl` and
-`jq`.
-
-## 5. Pre-push secret scan
-
-Before the first push, confirm no plaintext RDS credentials ever entered
-git history:
-
-```
-git log -p | grep -iE 'RDS_PASSWORD|password' || echo "No matches found"
-git status   # flyway.conf must NOT appear as tracked/staged
+```bash
+git grep -nIE '(ghp_|github_pat_|AKIA[0-9A-Z]{16})' -- .
+git check-ignore -v terraform/terraform.tfvars    # must match *.tfvars
+git status --short                                # flyway.conf must not appear
 ```
 
-## 6. Live demo script
+`terraform.tfvars` holds a GitHub PAT and `terraform.tfstate` holds generated
+database passwords in cleartext. A secret pushed to GitHub is compromised even
+after deletion — it stays in the history.
 
-1. Show `git log` — clean history, `.gitignore` committed from the start,
-   no credentials ever present.
-2. Run `scripts/sg-allow-actions.sh` to open the temporary SG rule scoped to
-   GitHub Actions IP ranges.
-3. Edit `sql/R__sp_actualizar_pedido.sql` live (append
-   `, actualizado_en = NOW()` to the `UPDATE`).
-4. Commit and push to `main`.
-5. Watch the `Flyway Migrate` Action run: `info` (before) → `migrate` →
-   `info` (after).
-6. Show `flyway_schema_history` — the repeatable SP has a new row with an
-   updated checksum; the versioned migrations (`V1`, `V2`) are untouched.
-7. Trigger the workflow a second time (`workflow_dispatch`, no changes) to
-   show idempotence — `migrate` reports nothing to apply, no new history
-   rows.
-8. Close out: run `scripts/sg-revoke-actions.sh`, confirm the ingress rule
-   and prefix list are gone, and rotate `RDS_PASSWORD` in GitHub Secrets.
+## Demo script
 
-## Non-goals
+1. `git log sql/R__sp_actualizar_pedido.sql` — who changed the procedure, when,
+   and why. This is what replaces the SharePoint folder.
+2. Edit `sql/R__sp_actualizar_pedido.sql` live, commit, push.
+3. Watch the run: dev applies, test applies, production stops at
+   **Waiting for approval**.
+4. Approve. The run records who approved, when, for which environment, and with
+   what comment — permanently.
+5. Show `flyway_schema_history`: the repeatable migration has a new row with a
+   different checksum; the versioned ones are untouched.
+6. Trigger the workflow again with no changes to show idempotence.
+7. Edit an already-applied `V__` migration and push. The run fails at dev on a
+   checksum mismatch; test and production are skipped. This is the failure that
+   currently goes undetected until environments have drifted apart.
 
-Production hardening, self-hosted runners, multi-environment targets,
-automated secret rotation, and Docker-based Flyway execution are out of
-scope for this demo.
+## Retired
+
+`scripts/sg-allow-actions.sh` and `scripts/sg-revoke-actions.sh` opened the
+database Security Group to GitHub Actions' published IP ranges for the duration
+of a demo. They belong to the earlier design, where jobs ran on GitHub-hosted
+runners and had to reach the database from the internet.
+
+The self-hosted runner made that unnecessary: it sits inside the VPC, the
+database Security Groups allow 3306 from the runner's Security Group ID only,
+and nothing is ever opened to the internet. The scripts are kept for reference
+and are not part of any current procedure.
