@@ -534,3 +534,60 @@ Terraform does not remove:
 - [ ] **The GitHub PAT**, if it was not already revoked.
 - [ ] **`terraform.tfstate`**, which still holds the generated passwords in
       cleartext.
+
+### Keep the Environments if you plan to rebuild
+
+The three GitHub Environments and their protection rules cost nothing and take
+ten minutes of clicking to recreate. Delete them only when the project is
+finished for good. Their secrets will be overwritten on the next rebuild
+anyway.
+
+The runner registration is the opposite: **delete it every time**. A
+registered-but-offline runner makes every job matching its labels queue
+forever rather than fail, so the next run hangs with no error to read.
+
+---
+
+## Rebuilding the lab
+
+About 30 minutes, most of it waiting for RDS. Everything in GitHub survives a
+teardown; everything in AWS is created fresh, including new IP addresses, a new
+RDS endpoint and **new passwords** — `random_password` regenerates on every
+apply.
+
+| # | Step | Time |
+|---|------|------|
+| 1 | New GitHub PAT (classic, `repo` scope, 7 days) into `terraform/terraform.tfvars` | 5 min |
+| 2 | `terraform apply` | 12 min |
+| 3 | Confirm the runner shows **Idle**, then revoke the PAT | 3 min |
+| 4 | Reload all 15 environment secrets | 2 min |
+| 5 | Recreate the Flyway user on RDS (step 3.2) | 5 min |
+| 6 | Baseline the three databases at version 0 (step 3.5) | 3 min |
+| 7 | Trigger the pipeline: Actions → Flyway Migrate → **Run workflow** | — |
+
+Step 4 is not optional and is the one that gets skipped. The old secrets point
+at machines that no longer exist:
+
+```bash
+cd terraform
+terraform output -raw github_secret_commands
+```
+
+Step 7 uses `workflow_dispatch`, so the pipeline can be run without pushing a
+commit — useful for a rehearsal, and for leaving the environments at a known
+state before a demo.
+
+### What survives a teardown, and what does not
+
+| Survives | Is recreated |
+|----------|--------------|
+| The repository and every migration | The three databases and their data |
+| The three Environments and their protection rules | Every password |
+| The approval history in Actions | Private IPs and the RDS endpoint |
+| Past workflow runs and their logs | `flyway_schema_history` |
+
+### Before a demo
+
+Apply in the morning, run the pipeline once end to end to confirm it is green,
+and leave it running. At roughly six cents an hour, the cost of a rehearsed
+demo is negligible next to building the lab with an audience watching.
