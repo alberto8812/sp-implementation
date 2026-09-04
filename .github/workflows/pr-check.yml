@@ -1,0 +1,114 @@
+name: PR Check
+
+# Runs on every pull request that touches migrations, against a throwaway MySQL
+# that lives only for this job. Nothing here reaches a real environment, so a
+# broken migration is one developer's problem instead of the team's.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "sql/**"
+      - ".github/workflows/pr-check.yml"
+
+env:
+  FLYWAY_VERSION: "10.20.1"
+  DB_NAME: flyway_demo
+
+jobs:
+  immutability:
+    name: Applied migrations are not edited
+    # GitHub-hosted: this job only reads the repository.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history, so the branch can be compared against main.
+          fetch-depth: 0
+
+      - name: Fetch the base branch
+        # checkout leaves the PR merge ref checked out; the base branch has to
+        # be fetched before it can be compared against.
+        run: git fetch --no-tags origin "${{ github.base_ref }}"
+
+      - name: Reject edits to versioned migrations
+        run: |
+          # Versioned migrations are immutable once applied. Adding a V__ file
+          # is normal; modifying, renaming or deleting one is not, and Flyway
+          # would only catch it after the merge, against a real database.
+          CHANGED="$(git diff --name-only --diff-filter=MRD \
+            "origin/${{ github.base_ref }}...HEAD" -- 'sql/V*')"
+
+          if [ -n "$CHANGED" ]; then
+            echo "::error::A versioned migration was modified, renamed or deleted:"
+            printf '%s\n' "$CHANGED"
+            echo ""
+            echo "Versioned migrations are immutable. Their checksum is recorded"
+            echo "in every environment that already applied them, so editing one"
+            echo "makes the file disagree with the database."
+            echo ""
+            echo "Add a new migration instead, for example:"
+            echo "  sql/V$(date -u +%Y%m%d_%H%M)__describe_the_change.sql"
+            exit 1
+          fi
+
+          echo "No versioned migration was modified."
+
+  migrate:
+    name: Migrations run from an empty schema
+    runs-on: ubuntu-latest
+
+    # A MySQL container alongside the job. It is created before the steps run
+    # and destroyed when the job ends — no shared state, no cleanup.
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: ci-throwaway
+          MYSQL_DATABASE: flyway_demo
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pci-throwaway"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+
+    env:
+      FLYWAY_URL: jdbc:mysql://127.0.0.1:3306/flyway_demo
+      FLYWAY_USER: root
+      FLYWAY_PASSWORD: ci-throwaway
+      FLYWAY_CLEAN_DISABLED: "true"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Flyway CLI (pinned)
+        run: |
+          curl -sSL -o "$RUNNER_TEMP/flyway.tar.gz" \
+            "https://repo1.maven.org/maven2/org/flywaydb/flyway-commandline/${FLYWAY_VERSION}/flyway-commandline-${FLYWAY_VERSION}-linux-x64.tar.gz"
+          tar -xzf "$RUNNER_TEMP/flyway.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/flyway-${FLYWAY_VERSION}" >> "$GITHUB_PATH"
+
+      - name: Migrate from empty
+        # The schema starts empty, so every migration runs in order. This is
+        # what a brand new environment would do, and it catches a migration
+        # that only works because an earlier environment already had the
+        # objects it depends on.
+        run: flyway -locations=filesystem:sql migrate
+
+      - name: Migrate again — must be a no-op
+        # A second run with no file changes must apply nothing. A migration
+        # that applies twice is not repeatable and would drift between
+        # environments.
+        run: |
+          OUT="$(flyway -locations=filesystem:sql migrate)"
+          echo "$OUT"
+          if echo "$OUT" | grep -q 'Successfully applied'; then
+            echo "::error::A second migrate applied changes. Migrations must be idempotent."
+            exit 1
+          fi
+
+      - name: Flyway info
+        run: flyway -locations=filesystem:sql info
