@@ -48,7 +48,10 @@ jobs:
       - name: Flyway validate
         # Fails when a versioned migration that is already applied has been
         # edited. This is the guard the pipeline exists for.
-        run: flyway -locations=filesystem:sql validate
+        #
+        # Pending migrations are the normal state before a migrate, not a
+        # problem, so they are excluded. Checksum mismatches still fail.
+        run: flyway -locations=filesystem:sql -ignoreMigrationPatterns='*:pending' validate
 
       - name: Flyway migrate
         run: flyway -locations=filesystem:sql migrate
