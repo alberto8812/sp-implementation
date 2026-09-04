@@ -1,8 +1,8 @@
 name: PR Check
 
-# Runs on every pull request that touches migrations, against a throwaway MySQL
-# that lives only for this job. Nothing here reaches a real environment, so a
-# broken migration is one developer's problem instead of the team's.
+# Validates the migrations on every pull request, against a throwaway MySQL that
+# lives only for the job. Nothing here reaches a real environment, so a broken
+# migration is one developer's problem instead of the team's.
 #
 # Deliberately unfiltered by path. Both jobs are required status checks on
 # `main`, and a required check that never runs never passes — a pull request
@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           # Full history, so the branch can be compared against main.
           fetch-depth: 0
@@ -84,7 +84,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Flyway CLI (pinned)
         run: |
