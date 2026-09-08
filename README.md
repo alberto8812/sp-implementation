@@ -1,174 +1,179 @@
-# Flyway + GitHub Actions + MySQL — stored procedures under version control
+# Flyway + GitHub Actions + MySQL — stored procedures bajo control de versiones
 
-Stored procedures are edited by hand and archived as loose copies in
-SharePoint. There is no history, no author or date trail, and a real risk of
-applying the wrong copy. This repository is the working answer: migrations live
-in git, a pipeline applies them in a fixed order across three environments, and
-production waits for a named human to approve.
+Hoy los stored procedures se editan a mano y se archivan como copias sueltas en
+SharePoint. No hay historial, no hay rastro de autor ni de fecha, y existe un
+riesgo real de aplicar la copia equivocada. Este repositorio es la respuesta
+concreta: las migraciones viven en git, un pipeline las aplica en un orden fijo
+sobre tres ambientes, y producción espera la aprobación de una persona
+designada.
 
-`sp_get_cliente` and `sp_actualizar_pedido` are stand-ins used to demonstrate
-the mechanism. They are not real production procedures.
+`sp_get_cliente` y `sp_actualizar_pedido` son ejemplos usados para demostrar el
+mecanismo. No son procedures reales de producción.
 
-## Where to start
+## Por dónde empezar
 
-| You want to | Read |
-|-------------|------|
-| Know how the team works day to day — branches, PRs, checks | [`docs/flujo-de-trabajo.md`](docs/flujo-de-trabajo.md) |
-| See worked examples of the seven common kinds of change | [`docs/ejemplos-de-cambios.md`](docs/ejemplos-de-cambios.md) |
-| Build a disposable AWS lab and practise the whole cycle | [`terraform/README.md`](terraform/README.md) |
-| Repeat the exact run that was verified, including its corrections | [`docs/lab-walkthrough.md`](docs/lab-walkthrough.md) |
-| Adopt this on infrastructure that already exists | [`docs/aws-multi-environment-setup.md`](docs/aws-multi-environment-setup.md) |
+| Si querés | Leé |
+|-----------|-----|
+| Saber cómo trabaja el equipo día a día — ramas, PRs, checks | [`docs/flujo-de-trabajo.md`](docs/flujo-de-trabajo.md) |
+| Ver ejemplos resueltos de los siete tipos de cambio más comunes | [`docs/ejemplos-de-cambios.md`](docs/ejemplos-de-cambios.md) |
+| Levantar un lab desechable en AWS y practicar el ciclo completo | [`terraform/README.md`](terraform/README.md) |
+| Repetir exactamente la corrida que se verificó, con sus correcciones | [`docs/lab-walkthrough.md`](docs/lab-walkthrough.md) |
+| Adoptar esto sobre infraestructura que ya existe | [`docs/aws-multi-environment-setup.md`](docs/aws-multi-environment-setup.md) |
 
-## Repository layout
+## Estructura del repositorio
 
 ```
-sql/                                  Flyway migrations
-  V1__baseline_schema.sql             Versioned: clientes/pedidos tables
-  V2__create_sp_get_cliente.sql       Versioned: example SP
-  V3__add_telefono_clientes.sql       Versioned: adds clientes.telefono
-  R__sp_actualizar_pedido.sql         Repeatable: example SP, edited in place
+sql/                                  Migraciones de Flyway
+  V1__baseline_schema.sql             Versionada: tablas clientes/pedidos
+  V2__create_sp_get_cliente.sql       Versionada: SP de ejemplo
+  V3__add_telefono_clientes.sql       Versionada: agrega clientes.telefono
+  R__sp_actualizar_pedido.sql         Repetible: SP de ejemplo, se edita en el mismo archivo
 .github/workflows/
-  pr-check.yml                        On every PR: immutability + migrate from empty
-  flyway-migrate.yml                  Orchestrator: dev -> test -> production
-  flyway-run.yml                      Reusable: one environment per call
-terraform/                            Disposable AWS lab (VPC, 2x EC2, RDS, runner)
-docs/                                 Adoption runbook and lab walkthrough
-flyway.conf.example                   Committed template (placeholder values)
-flyway.conf                           Local only, gitignored
-scripts/                              Obsolete — see "Retired" below
+  pr-check.yml                        En cada PR: inmutabilidad + migrate desde cero
+  flyway-migrate.yml                  Orquestador: dev -> test -> production
+  flyway-run.yml                      Reutilizable: un ambiente por invocación
+terraform/                            Lab desechable en AWS (VPC, 2x EC2, RDS, runner)
+docs/                                 Runbook de adopción y walkthrough del lab
+flyway.conf.example                   Plantilla versionada (valores de ejemplo)
+flyway.conf                           Solo local, ignorado por git
+scripts/                              Obsoleto — ver "Retirado" más abajo
 ```
 
-## Versioned vs repeatable
+## Versionadas vs. repetibles
 
-This is the distinction everything else rests on.
+Esta es la distinción sobre la que se apoya todo lo demás.
 
-**`R__` — repeatable. Stored procedures go here.** One file per procedure,
-edited in place as often as needed. Flyway notices the checksum changed and
-re-applies it. The prefix is on the *file name*; the procedure keeps its own
-name, and callers keep using `CALL sp_actualizar_pedido(...)` unchanged.
+**`R__` — repetible. Acá van los stored procedures.** Un archivo por procedure,
+editado en el mismo lugar tantas veces como haga falta. Flyway detecta que el
+checksum cambió y lo vuelve a aplicar. El prefijo va en el *nombre del archivo*;
+el procedure conserva su propio nombre, y quien lo consume sigue usando
+`CALL sp_actualizar_pedido(...)` sin cambios.
 
-MySQL 8 has no `CREATE OR REPLACE PROCEDURE`, so a repeatable migration opens
-with `DROP PROCEDURE IF EXISTS`. That is what makes re-running it safe.
+MySQL 8 no tiene `CREATE OR REPLACE PROCEDURE`, así que una migración repetible
+empieza con `DROP PROCEDURE IF EXISTS`. Eso es lo que hace que volver a
+ejecutarla sea seguro.
 
-**`V__` — versioned. Structural change goes here.** Never edited after they are
-applied — an `ALTER TABLE` that already ran cannot run again. The next change is
-a new file. The pipeline's `validate` step enforces this: edit an applied `V__`
-and the run stops at dev, leaving test and production untouched.
+**`V__` — versionada. Acá van los cambios estructurales.** Nunca se editan
+después de aplicadas: un `ALTER TABLE` que ya corrió no puede volver a correr.
+El siguiente cambio es un archivo nuevo. El paso `validate` del pipeline lo
+impone: si editás una `V__` ya aplicada, la corrida se detiene en dev y deja
+test y producción intactos.
 
-## The pipeline
+## El pipeline
 
-Nothing reaches `main` unchecked. Every pull request that touches `sql/` runs
-two jobs on GitHub-hosted runners — no real database is involved, so PRs
-validate in parallel:
+Nada llega a `main` sin verificar. Cada pull request que toca `sql/` ejecuta dos
+jobs en runners de GitHub — no interviene ninguna base de datos real, así que
+los PRs validan en paralelo:
 
-| Check | What it catches |
-|-------|-----------------|
-| `Applied migrations are not edited` | A `V__` that was modified, renamed or deleted. Its checksum is already recorded in every environment that applied it, so editing one makes the file disagree with the database |
-| `Migrations run from an empty schema` | Syntax errors, broken ordering, and migrations that are not idempotent — verified against a throwaway MySQL, then re-run to prove the second pass applies nothing |
+| Check | Qué detecta |
+|-------|-------------|
+| `Applied migrations are not edited` | Una `V__` modificada, renombrada o borrada. Su checksum ya quedó registrado en todos los ambientes que la aplicaron, así que editarla hace que el archivo deje de coincidir con la base |
+| `Migrations run from an empty schema` | Errores de sintaxis, orden roto y migraciones que no son idempotentes — se verifica contra un MySQL descartable y luego se vuelve a correr para probar que la segunda pasada no aplica nada |
 
-A ruleset on `main` requires both to pass, so a broken migration cannot be
-merged. See [`docs/flujo-de-trabajo.md`](docs/flujo-de-trabajo.md) for the full
-branching model and the ruleset settings.
+Un ruleset sobre `main` exige que ambos pasen, de modo que una migración rota no
+se puede mergear. Ver [`docs/flujo-de-trabajo.md`](docs/flujo-de-trabajo.md)
+para el modelo de ramas completo y la configuración del ruleset.
 
-Once merged:
+Una vez mergeado:
 
 ```
-push to main (paths: sql/**)
+push a main (paths: sql/**)
         ↓
       dev        info → validate → migrate → info
         ↓        needs: dev
       test       info → validate → migrate → info
         ↓        needs: test
-   production    waits for a required reviewer
+   production    espera a un reviewer requerido
         ↓
-              approved → applies
+              aprobado → aplica
 ```
 
-Four lines carry the design:
+Cuatro líneas sostienen el diseño:
 
-| Line | What it buys |
-|------|--------------|
-| `runs-on: [self-hosted, linux, vpc-interna]` | GitHub-hosted runners have no route to private databases |
-| `environment: ${{ inputs.environment }}` | Scopes the secrets *and* applies the environment's protection rules |
-| `needs: test` | Production is unreachable if test failed — the job never starts |
-| `FLYWAY_CLEAN_DISABLED: "true"` | `flyway clean` drops every object in the schema. Nothing here needs it |
+| Línea | Qué aporta |
+|-------|------------|
+| `runs-on: [self-hosted, linux, vpc-interna]` | Los runners de GitHub no tienen ruta hacia bases de datos privadas |
+| `environment: ${{ inputs.environment }}` | Delimita los secrets *y* aplica las reglas de protección del ambiente |
+| `needs: test` | Producción es inalcanzable si test falló — el job ni siquiera arranca |
+| `FLYWAY_CLEAN_DISABLED: "true"` | `flyway clean` borra todos los objetos del esquema. Acá nada lo necesita |
 
 ## Secrets
 
-Five per environment, scoped to `dev`, `test` and `production`. Not repository
-secrets — a job declaring `environment: dev` cannot read a secret stored in
-`production`, and that is enforced, not encouraged.
+Cinco por ambiente, delimitados a `dev`, `test` y `production`. No son secrets
+de repositorio: un job que declara `environment: dev` no puede leer un secret
+guardado en `production`, y eso está impuesto por la plataforma, no sugerido.
 
-| Secret | Value |
+| Secret | Valor |
 |--------|-------|
-| `DB_HOST` | Host or RDS endpoint for that environment |
+| `DB_HOST` | Host o endpoint de RDS de ese ambiente |
 | `DB_PORT` | `3306` |
-| `DB_NAME` | Schema Flyway owns |
-| `DB_USER` | Least-privilege migration user |
-| `DB_PASSWORD` | Its password |
+| `DB_NAME` | Esquema que administra Flyway |
+| `DB_USER` | Usuario de migración con privilegios mínimos |
+| `DB_PASSWORD` | Su contraseña |
 
-They are consumed as `FLYWAY_URL` / `FLYWAY_USER` / `FLYWAY_PASSWORD`
-environment variables — never as CLI flags, never printed.
+Se consumen como variables de entorno `FLYWAY_URL` / `FLYWAY_USER` /
+`FLYWAY_PASSWORD` — nunca como flags de CLI, nunca impresas.
 
-`terraform output -raw github_secret_commands` prints the exact `gh secret set`
-commands, with each password piped straight from Parameter Store so it never
-becomes a literal in the shell history.
+`terraform output -raw github_secret_commands` imprime los comandos
+`gh secret set` exactos, con cada contraseña canalizada directamente desde
+Parameter Store para que nunca quede como literal en el historial de la shell.
 
-## Flyway CLI version
+## Versión del CLI de Flyway
 
-Pinned to **10.20.1**, in `.github/workflows/flyway-run.yml` (`FLYWAY_VERSION`).
-Install the same version locally for parity.
+Fijada en **10.20.1**, en `.github/workflows/flyway-run.yml` (`FLYWAY_VERSION`).
+Instalá la misma versión en local para tener paridad.
 
-To bump it: change `FLYWAY_VERSION`, verify against a non-production database
-first, then update this section.
+Para subirla: cambiá `FLYWAY_VERSION`, verificá primero contra una base que no
+sea de producción, y después actualizá esta sección.
 
-## Local setup
+## Configuración local
 
 ```bash
-cp flyway.conf.example flyway.conf     # gitignored; fill in real values
+cp flyway.conf.example flyway.conf     # ignorado por git; completá con valores reales
 flyway -configFiles=flyway.conf info
 flyway -configFiles=flyway.conf migrate
 ```
 
-Re-run `migrate` unchanged to confirm idempotence: nothing to apply, no new
-history rows.
+Volvé a correr `migrate` sin cambios para confirmar la idempotencia: nada por
+aplicar, ninguna fila nueva en el historial.
 
-## Pre-push secret scan
+## Escaneo de secretos antes de un push
 
 ```bash
 git grep -nIE '(ghp_|github_pat_|AKIA[0-9A-Z]{16})' -- .
-git check-ignore -v terraform/terraform.tfvars    # must match *.tfvars
-git status --short                                # flyway.conf must not appear
+git check-ignore -v terraform/terraform.tfvars    # debe coincidir con *.tfvars
+git status --short                                # flyway.conf no debe aparecer
 ```
 
-`terraform.tfvars` holds a GitHub PAT and `terraform.tfstate` holds generated
-database passwords in cleartext. A secret pushed to GitHub is compromised even
-after deletion — it stays in the history.
+`terraform.tfvars` contiene un PAT de GitHub y `terraform.tfstate` contiene en
+texto plano las contraseñas generadas para las bases. Un secreto pusheado a
+GitHub queda comprometido incluso después de borrarlo: permanece en el
+historial.
 
-## Demo script
+## Guion de la demo
 
-1. `git log sql/R__sp_actualizar_pedido.sql` — who changed the procedure, when,
-   and why. This is what replaces the SharePoint folder.
-2. Edit `sql/R__sp_actualizar_pedido.sql` live, commit, push.
-3. Watch the run: dev applies, test applies, production stops at
+1. `git log sql/R__sp_actualizar_pedido.sql` — quién cambió el procedure, cuándo
+   y por qué. Esto es lo que reemplaza a la carpeta de SharePoint.
+2. Editar `sql/R__sp_actualizar_pedido.sql` en vivo, commitear, pushear.
+3. Mirar la corrida: dev aplica, test aplica, producción se detiene en
    **Waiting for approval**.
-4. Approve. The run records who approved, when, for which environment, and with
-   what comment — permanently.
-5. Show `flyway_schema_history`: the repeatable migration has a new row with a
-   different checksum; the versioned ones are untouched.
-6. Trigger the workflow again with no changes to show idempotence.
-7. Edit an already-applied `V__` migration and push. The run fails at dev on a
-   checksum mismatch; test and production are skipped. This is the failure that
-   currently goes undetected until environments have drifted apart.
+4. Aprobar. La corrida registra quién aprobó, cuándo, para qué ambiente y con
+   qué comentario — de forma permanente.
+5. Mostrar `flyway_schema_history`: la migración repetible tiene una fila nueva
+   con un checksum distinto; las versionadas quedaron intactas.
+6. Disparar el workflow de nuevo sin cambios para mostrar la idempotencia.
+7. Editar una migración `V__` ya aplicada y pushear. La corrida falla en dev por
+   checksum mismatch; test y producción se saltean. Este es justamente el fallo
+   que hoy pasa desapercibido hasta que los ambientes ya divergieron.
 
-## Retired
+## Retirado
 
-`scripts/sg-allow-actions.sh` and `scripts/sg-revoke-actions.sh` opened the
-database Security Group to GitHub Actions' published IP ranges for the duration
-of a demo. They belong to the earlier design, where jobs ran on GitHub-hosted
-runners and had to reach the database from the internet.
+`scripts/sg-allow-actions.sh` y `scripts/sg-revoke-actions.sh` abrían el
+Security Group de la base a los rangos de IP publicados por GitHub Actions
+durante una demo. Pertenecen al diseño anterior, donde los jobs corrían en
+runners de GitHub y tenían que llegar a la base desde internet.
 
-The self-hosted runner made that unnecessary: it sits inside the VPC, the
-database Security Groups allow 3306 from the runner's Security Group ID only,
-and nothing is ever opened to the internet. The scripts are kept for reference
-and are not part of any current procedure.
+El runner self-hosted volvió eso innecesario: vive dentro de la VPC, los
+Security Groups de las bases permiten el 3306 únicamente desde el Security Group
+ID del runner, y nunca se abre nada a internet. Los scripts se conservan como
+referencia y no forman parte de ningún procedimiento vigente.
