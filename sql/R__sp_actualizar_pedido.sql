@@ -13,6 +13,8 @@ CREATE PROCEDURE sp_actualizar_pedido(IN p_pedido_id INT, IN p_estado VARCHAR(20
 BEGIN
     DECLARE v_estado_actual VARCHAR(20);
     
+
+
     
     IF p_estado NOT IN ('pendiente', 'procesando', 'enviado', 'entregado', 'cancelado', 'devuelto') THEN
         SIGNAL SQLSTATE '45000'
